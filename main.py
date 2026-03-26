@@ -36,7 +36,7 @@ NAUTOBOT_URL = os.environ["NAUTOBOT_URL"]
 NAUTOBOT_TOKEN = os.environ["NAUTOBOT_TOKEN"]
 CSV_PATH = os.environ.get("CSV_PATH", "network_devices.csv")
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "100"))
-SSL_VERIFY = os.environ.get("SSL_VERIFY", "true").lower() not in {"false", "0", "no"}
+SSL_VERIFY = False
 
 JOB_NAME = "SSOTSyncDevices"
 WEEKLY_BACKUP_TAG_NAME = "Weekly Backup"
@@ -175,7 +175,10 @@ def _resolve_uuids(nb: pynautobot.api, key: JobKey) -> dict[str, object]:  # typ
     resolved: dict[str, object] = {
         "location": _resolve_location(nb, key),
         "namespace": _get_uuid(nb.ipam.namespaces.get(name=key.namespace), f"namespace '{key.namespace}'"),
-        "device_role": _get_uuid(nb.extras.roles.get(name=key.device_role_name), f"device_role '{key.device_role_name}'"),
+        "device_role": _get_uuid(
+            nb.extras.roles.get(name=key.device_role_name),
+            f"device_role '{key.device_role_name}'",
+        ),
         **_resolve_statuses(nb, key),
         "secrets_group": _get_uuid(
             nb.extras.secrets_groups.get(name=key.secrets_group_name),
@@ -403,29 +406,21 @@ def read_csv(path: str) -> dict[JobKey, list[str]]:
     return groups
 
 
-def run_sync_devices_job() -> None:
-    """Load the CSV and trigger one SSOTSyncDevices job per unique parameter group.
+def _get_job(nb: pynautobot.api) -> object:  # type: ignore[valid-type]
+    """Look up the SSOTSyncDevices job by name, then by class name.
 
-    Large IP groups are split into batches of ``BATCH_SIZE`` (default 100).
-    After each successful batch the onboarded devices are post-processed:
-    the "Weekly Backup" tag is applied, the location's tenant is copied to the
-    device (if available), and the location's device-applicable tags are added.
+    Prints all available jobs when neither lookup succeeds, to help identify
+    the correct name for the current Nautobot instance.
+
+    Args:
+        nb: Authenticated pynautobot API client.
+
+    Returns:
+        object: The pynautobot job Record.
 
     Raises:
-        RuntimeError: If the SSOTSyncDevices job is not found in Nautobot.
+        RuntimeError: If the job cannot be found by name or class name.
     """
-    nb = pynautobot.api(NAUTOBOT_URL, token=NAUTOBOT_TOKEN, verify=SSL_VERIFY)
-
-    groups = read_csv(CSV_PATH)
-    total_ips = sum(len(v) for v in groups.values())
-    log.info("Loaded %s: %d IPs in %d job group(s)\n", CSV_PATH, total_ips, len(groups))
-
-    weekly_backup_tag_id = _ensure_weekly_backup_tag(nb)
-    device_tag_ids = _fetch_device_tag_ids(nb)
-    log.info("Weekly Backup tag id: %s", weekly_backup_tag_id)
-    log.info("Device-applicable tags in Nautobot: %d\n", len(device_tag_ids))
-
-    # Try by human-readable name first, then fall back to class name
     job = nb.extras.jobs.get(name=JOB_NAME)
     if job is None or isinstance(job, list):
         job = nb.extras.jobs.get(job_class_name=JOB_NAME)
@@ -443,6 +438,32 @@ def run_sync_devices_job() -> None:
             "or ensure the job is enabled in Nautobot."
         )
         raise RuntimeError(msg)
+    return job
+
+
+def run_sync_devices_job() -> None:
+    """Load the CSV and trigger one SSOTSyncDevices job per unique parameter group.
+
+    Large IP groups are split into batches of ``BATCH_SIZE`` (default 100).
+    After each successful batch the onboarded devices are post-processed:
+    the "Weekly Backup" tag is applied, the location's tenant is copied to the
+    device (if available), and the location's device-applicable tags are added.
+
+    Raises:
+        RuntimeError: If the SSOTSyncDevices job is not found in Nautobot (via ``_get_job``).
+    """
+    nb = pynautobot.api(NAUTOBOT_URL, token=NAUTOBOT_TOKEN, verify=SSL_VERIFY)
+
+    groups = read_csv(CSV_PATH)
+    total_ips = sum(len(v) for v in groups.values())
+    log.info("Loaded %s: %d IPs in %d job group(s)\n", CSV_PATH, total_ips, len(groups))
+
+    weekly_backup_tag_id = _ensure_weekly_backup_tag(nb)
+    device_tag_ids = _fetch_device_tag_ids(nb)
+    log.info("Weekly Backup tag id: %s", weekly_backup_tag_id)
+    log.info("Device-applicable tags in Nautobot: %d\n", len(device_tag_ids))
+
+    job = _get_job(nb)
 
     for group_idx, (key, ips) in enumerate(groups.items(), start=1):
         uuids = _resolve_uuids(nb, key)
