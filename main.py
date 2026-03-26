@@ -115,6 +115,52 @@ def _get_uuid(obj: object, label: str) -> str:
     return str(obj.id)  # type: ignore[union-attr]
 
 
+def _resolve_location(nb: pynautobot.api, key: JobKey) -> str:  # type: ignore[valid-type]
+    """Resolve location name (and optional parent name) to a Nautobot UUID.
+
+    Nautobot does not support ``parent__name`` as a filter, so when a parent
+    name is given the parent is looked up first and its UUID is used to filter
+    the child location.
+
+    Args:
+        nb: Authenticated pynautobot API client.
+        key: JobKey whose ``location_name`` and ``location_parent_name`` are used.
+
+    Returns:
+        str: UUID of the matched location.
+    """
+    location_filter: dict[str, str] = {"name": key.location_name}
+    if key.location_parent_name:
+        parent_uuid = _get_uuid(
+            nb.dcim.locations.get(name=key.location_parent_name),
+            f"parent location '{key.location_parent_name}'",
+        )
+        location_filter["parent"] = parent_uuid
+    return _get_uuid(
+        nb.dcim.locations.get(**location_filter),
+        f"location '{key.location_name}' (parent: '{key.location_parent_name or 'any'}')",
+    )
+
+
+def _resolve_statuses(nb: pynautobot.api, key: JobKey) -> dict[str, str]:  # type: ignore[valid-type]
+    """Resolve the three status fields from a JobKey to Nautobot UUIDs.
+
+    Args:
+        nb: Authenticated pynautobot API client.
+        key: JobKey containing the status name fields.
+
+    Returns:
+        dict[str, str]: Mapping of ``device_status``, ``interface_status``,
+        and ``ip_address_status`` to their respective UUIDs.
+    """
+    pairs = [
+        ("device_status", key.device_status_name),
+        ("interface_status", key.interface_status_name),
+        ("ip_address_status", key.ip_address_status_name),
+    ]
+    return {field: _get_uuid(nb.extras.statuses.get(name=name), f"{field} '{name}'") for field, name in pairs}
+
+
 def _resolve_uuids(nb: pynautobot.api, key: JobKey) -> dict[str, object]:  # type: ignore[valid-type]
     """Resolve all name-based CSV fields to Nautobot UUIDs.
 
@@ -126,52 +172,15 @@ def _resolve_uuids(nb: pynautobot.api, key: JobKey) -> dict[str, object]:  # typ
         dict[str, object]: Mapping of job data field names to resolved UUIDs
         and scalar values ready to pass to the job's ``data`` payload.
     """
-    location_filter: dict[str, str] = {"name": key.location_name}
-    if key.location_parent_name:
-        location_filter["parent__name"] = key.location_parent_name
-    location_uuid = _get_uuid(
-        nb.dcim.locations.get(**location_filter),
-        f"location '{key.location_name}' (parent: '{key.location_parent_name}')",
-    )
-
-    namespace_uuid = _get_uuid(
-        nb.ipam.namespaces.get(name=key.namespace),
-        f"namespace '{key.namespace}'",
-    )
-
-    device_role_uuid = _get_uuid(
-        nb.extras.roles.get(name=key.device_role_name),
-        f"device_role '{key.device_role_name}'",
-    )
-
-    device_status_uuid = _get_uuid(
-        nb.extras.statuses.get(name=key.device_status_name),
-        f"device_status '{key.device_status_name}'",
-    )
-
-    interface_status_uuid = _get_uuid(
-        nb.extras.statuses.get(name=key.interface_status_name),
-        f"interface_status '{key.interface_status_name}'",
-    )
-
-    ip_address_status_uuid = _get_uuid(
-        nb.extras.statuses.get(name=key.ip_address_status_name),
-        f"ip_address_status '{key.ip_address_status_name}'",
-    )
-
-    secrets_group_uuid = _get_uuid(
-        nb.extras.secrets_groups.get(name=key.secrets_group_name),
-        f"secrets_group '{key.secrets_group_name}'",
-    )
-
     resolved: dict[str, object] = {
-        "location": location_uuid,
-        "namespace": namespace_uuid,
-        "device_role": device_role_uuid,
-        "device_status": device_status_uuid,
-        "interface_status": interface_status_uuid,
-        "ip_address_status": ip_address_status_uuid,
-        "secrets_group": secrets_group_uuid,
+        "location": _resolve_location(nb, key),
+        "namespace": _get_uuid(nb.ipam.namespaces.get(name=key.namespace), f"namespace '{key.namespace}'"),
+        "device_role": _get_uuid(nb.extras.roles.get(name=key.device_role_name), f"device_role '{key.device_role_name}'"),
+        **_resolve_statuses(nb, key),
+        "secrets_group": _get_uuid(
+            nb.extras.secrets_groups.get(name=key.secrets_group_name),
+            f"secrets_group '{key.secrets_group_name}'",
+        ),
         "port": key.port,
         "timeout": key.timeout,
         "set_mgmt_only": key.set_mgmt_only,
