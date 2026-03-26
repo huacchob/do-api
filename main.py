@@ -416,11 +416,22 @@ def run_sync_devices_job() -> None:
     log.info("Weekly Backup tag id: %s", weekly_backup_tag_id)
     log.info("Device-applicable tags in Nautobot: %d\n", len(device_tag_ids))
 
+    # Try by human-readable name first, then fall back to class name
     job = nb.extras.jobs.get(name=JOB_NAME)
     if job is None or isinstance(job, list):
+        job = nb.extras.jobs.get(job_class_name=JOB_NAME)
+    if job is None or isinstance(job, list):
+        available = sorted(
+            f"  name={getattr(j, 'name', '?')!r}  class={getattr(j, 'job_class_name', '?')!r}"
+            for j in nb.extras.jobs.all()
+        )
+        available_str = "\n".join(available) if available else "  (no jobs found)"
         msg = (
-            f"Job '{JOB_NAME}' not found. "
-            "Ensure nautobot-app-device-onboarding is installed and the job is enabled."
+            f"Job '{JOB_NAME}' not found by name or class name.\n"
+            "Available jobs:\n"
+            f"{available_str}\n"
+            "Set JOB_NAME in main.py to one of the names above, "
+            "or ensure the job is enabled in Nautobot."
         )
         raise RuntimeError(msg)
 
