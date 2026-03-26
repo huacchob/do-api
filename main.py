@@ -24,6 +24,9 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 
+import urllib3
+import urllib3.exceptions
+
 import pynautobot
 from dotenv import load_dotenv
 
@@ -37,6 +40,7 @@ NAUTOBOT_TOKEN = os.environ["NAUTOBOT_TOKEN"]
 CSV_PATH = os.environ.get("CSV_PATH", "network_devices.csv")
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "100"))
 SSL_VERIFY = False
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 JOB_NAME = "SSOTSyncDevices"
 WEEKLY_BACKUP_TAG_NAME = "Weekly Backup"
