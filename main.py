@@ -337,6 +337,63 @@ def _get_location_context(
     return tenant_id, location_tags
 
 
+def _match_devices_by_ip(devices: list[object], ip_set: set[str]) -> list[object]:
+    """Return the subset of devices whose primary IPv4 address is in ``ip_set``.
+
+    Nautobot stores IP addresses with a prefix length (e.g. ``10.0.0.1/32``),
+    so the host part is stripped before comparison.
+
+    Args:
+        devices: List of pynautobot device Records to filter.
+        ip_set: Plain IP address strings to match against (no prefix length).
+
+    Returns:
+        list[object]: Devices whose primary_ip4 host address is in ``ip_set``.
+    """
+    matched: list[object] = []
+    for device in devices:
+        primary = getattr(device, "primary_ip4", None)
+        if not primary:
+            continue
+        host = str(getattr(primary, "address", "") or "").split("/")[0]
+        if host in ip_set:
+            matched.append(device)
+    return matched
+
+
+def _update_device(
+    device: object,
+    weekly_backup_tag_id: str,
+    location_tag_ids: list[str],
+    tenant_id: str | None,
+) -> None:
+    """Apply tags and tenant to a single device in Nautobot.
+
+    Adds the "Weekly Backup" tag unconditionally, copies location tags that
+    are not already present, and sets the tenant when the device has none.
+
+    Args:
+        device: pynautobot device Record to update.
+        weekly_backup_tag_id: UUID of the 'Weekly Backup' tag.
+        location_tag_ids: UUIDs of location tags eligible for device objects.
+        tenant_id: Tenant UUID to apply, or ``None`` to skip tenant assignment.
+    """
+    current_tag_ids = {str(t.id) for t in (getattr(device, "tags", None) or [])}
+    tags_to_add = {weekly_backup_tag_id} | {t for t in location_tag_ids if t not in current_tag_ids}
+    update_payload: dict[str, object] = {"tags": list(current_tag_ids | tags_to_add)}
+
+    if tenant_id and not getattr(device, "tenant", None):
+        update_payload["tenant"] = tenant_id
+
+    device.update(update_payload)  # type: ignore[union-attr]
+    log.info(
+        "    updated device %s: +tags=%s tenant=%s",
+        getattr(device, "name", device),
+        tags_to_add,
+        update_payload.get("tenant", "(unchanged)"),
+    )
+
+
 def _post_process_devices(
     nb: pynautobot.api,  # type: ignore[valid-type]
     ips: list[str],
@@ -373,44 +430,19 @@ def _post_process_devices(
     else:
         log.info("  location has no device-applicable tags — skipping tag copy")
 
-    # Fetch devices in sub-chunks to avoid overly long query strings.
-    # Nautobot has no device filter for IP address strings or primary_ip4 UUIDs,
-    # so we resolve IP strings → IP objects → assigned interface → device ID,
-    # then fetch devices by id (which Nautobot does support as a list filter).
-    for sub_chunk in _chunks(ips, 50):
-        ip_objects = list(nb.ipam.ip_addresses.filter(address=sub_chunk))
-        device_ids: list[str] = []
-        for ip_obj in ip_objects:
-            assigned = getattr(ip_obj, "assigned_object", None)
-            dev = getattr(assigned, "device", None) if assigned else None
-            if dev:
-                device_ids.append(str(dev.id))  # type: ignore[union-attr]
-        if not device_ids:
-            log.info("  no devices found for chunk %s — skipping", sub_chunk)
-            continue
-        devices = list(nb.dcim.devices.filter(id=device_ids))
-        for device in devices:
-            current_tag_ids = {str(t.id) for t in (getattr(device, "tags", None) or [])}
+    # Fetch all devices at the location and match by primary_ip4 address.
+    # This avoids navigating the IP→interface→device chain, which can break
+    # when IPs exist but are not assigned to an interface.
+    ip_set = set(ips)
+    location_devices = list(nb.dcim.devices.filter(location=location_uuid))
+    devices = _match_devices_by_ip(location_devices, ip_set)
 
-            tags_to_add: set[str] = {weekly_backup_tag_id}
+    if not devices:
+        log.info("  no devices matched IPs %s at location %s — skipping", ips, location_uuid)
+        return
 
-            for loc_tag_id in location_tag_ids:
-                if loc_tag_id not in current_tag_ids:
-                    tags_to_add.add(loc_tag_id)
-
-            new_tag_ids = list(current_tag_ids | tags_to_add)
-            update_payload: dict[str, object] = {"tags": new_tag_ids}
-
-            if tenant_id and not getattr(device, "tenant", None):
-                update_payload["tenant"] = tenant_id
-
-            device.update(update_payload)  # type: ignore[union-attr]
-            log.info(
-                "    updated device %s: +tags=%s tenant=%s",
-                getattr(device, "name", device),
-                tags_to_add,
-                update_payload.get("tenant", "(unchanged)"),
-            )
+    for device in devices:
+        _update_device(device, weekly_backup_tag_id, location_tag_ids, tenant_id)
 
 
 def read_csv(path: str) -> dict[JobKey, list[str]]:
