@@ -115,12 +115,37 @@ def _get_uuid(obj: object, label: str) -> str:
     return str(obj.id)  # type: ignore[union-attr]
 
 
+def _filter_one(results: list[object], label: str) -> str:
+    """Return the UUID of the single item in ``results``, or raise.
+
+    Args:
+        results: List returned by a pynautobot ``.filter()`` call.
+        label: Human-readable description used in error messages.
+
+    Returns:
+        str: UUID of the sole matched object.
+
+    Raises:
+        RuntimeError: If the list is empty.
+        TypeError: If the list contains more than one item.
+    """
+    if not results:
+        msg = f"Nautobot returned no match for: {label}"
+        raise RuntimeError(msg)
+    if len(results) > 1:
+        msg = f"Nautobot returned {len(results)} matches for: {label} — be more specific or use a UUID"
+        raise TypeError(msg)
+    return str(results[0].id)  # type: ignore[union-attr]
+
+
 def _resolve_location(nb: pynautobot.api, key: JobKey) -> str:  # type: ignore[valid-type]
     """Resolve location name (and optional parent name) to a Nautobot UUID.
 
-    Nautobot does not support ``parent__name`` as a filter, so when a parent
-    name is given the parent is looked up first and its UUID is used to filter
-    the child location.
+    Nautobot does not support ``parent__name`` as a direct filter, so when a
+    parent name is given every location with that name is fetched and each is
+    tried as a parent filter for the child.  The lookup succeeds only when
+    exactly one child matches across all candidate parents, avoiding false
+    matches when the same parent name exists at multiple places in the tree.
 
     Args:
         nb: Authenticated pynautobot API client.
@@ -128,18 +153,26 @@ def _resolve_location(nb: pynautobot.api, key: JobKey) -> str:  # type: ignore[v
 
     Returns:
         str: UUID of the matched location.
+
+    Raises:
+        RuntimeError: If no matching location is found.
+        TypeError: If the name/parent combination is still ambiguous.
     """
-    location_filter: dict[str, str] = {"name": key.location_name}
-    if key.location_parent_name:
-        parent_uuid = _get_uuid(
-            nb.dcim.locations.get(name=key.location_parent_name),
-            f"parent location '{key.location_parent_name}'",
-        )
-        location_filter["parent"] = parent_uuid
-    return _get_uuid(
-        nb.dcim.locations.get(**location_filter),
-        f"location '{key.location_name}' (parent: '{key.location_parent_name or 'any'}')",
-    )
+    if not key.location_parent_name:
+        label = f"location '{key.location_name}'"
+        return _filter_one(list(nb.dcim.locations.filter(name=key.location_name)), label)
+
+    parents = list(nb.dcim.locations.filter(name=key.location_parent_name))
+    if not parents:
+        msg = f"Nautobot returned no match for: parent location '{key.location_parent_name}'"
+        raise RuntimeError(msg)
+
+    matches: list[object] = []
+    for parent in parents:
+        matches.extend(nb.dcim.locations.filter(name=key.location_name, parent=str(parent.id)))  # type: ignore[union-attr]
+
+    label = f"location '{key.location_name}' under any '{key.location_parent_name}'"
+    return _filter_one(matches, label)
 
 
 def _resolve_statuses(nb: pynautobot.api, key: JobKey) -> dict[str, str]:  # type: ignore[valid-type]
