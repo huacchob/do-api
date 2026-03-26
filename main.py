@@ -155,8 +155,8 @@ def _resolve_location(nb: pynautobot.api, key: JobKey) -> str:  # type: ignore[v
         str: UUID of the matched location.
 
     Raises:
-        RuntimeError: If no matching location is found.
-        TypeError: If the name/parent combination is still ambiguous.
+        RuntimeError: If no matching location is found (raised directly or via ``_filter_one``).
+        TypeError: If the name/parent combination is still ambiguous (via ``_filter_one``).
     """
     if not key.location_parent_name:
         label = f"location '{key.location_name}'"
@@ -246,7 +246,7 @@ def _wait_for_job(nb: pynautobot.api, job_result_id: str) -> str:  # type: ignor
         RuntimeError: If the job result cannot be retrieved.
     """
     poll_interval = 5
-    terminal_statuses = {"completed", "failed", "errored"}
+    terminal_statuses = {"completed", "success", "failed", "errored"}
     status = "pending"
 
     while True:
@@ -483,7 +483,7 @@ def run_sync_devices_job() -> None:
     device (if available), and the location's device-applicable tags are added.
 
     Raises:
-        RuntimeError: If the SSOTSyncDevices job is not found in Nautobot (via ``_get_job``).
+        RuntimeError: Propagated from ``_get_job`` when the SSOTSyncDevices job is not found.
     """
     nb = pynautobot.api(NAUTOBOT_URL, token=NAUTOBOT_TOKEN, verify=SSL_VERIFY)
 
@@ -525,7 +525,7 @@ def run_sync_devices_job() -> None:
             log.info("  done: %s", status)
             log.info("  view: %s/extras/job-results/%s/", NAUTOBOT_URL, job_result_id)
 
-            if status.lower() == "completed":
+            if status.lower() in {"completed", "success"}:
                 log.info("  post-processing %d devices...", len(chunk))
                 _post_process_devices(nb, chunk, location_uuid, weekly_backup_tag_id, device_tag_ids)
             else:
