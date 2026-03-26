@@ -36,6 +36,7 @@ NAUTOBOT_URL = os.environ["NAUTOBOT_URL"]
 NAUTOBOT_TOKEN = os.environ["NAUTOBOT_TOKEN"]
 CSV_PATH = os.environ.get("CSV_PATH", "network_devices.csv")
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "100"))
+SSL_VERIFY = os.environ.get("SSL_VERIFY", "true").lower() not in {"false", "0", "no"}
 
 JOB_NAME = "SSOTSyncDevices"
 WEEKLY_BACKUP_TAG_NAME = "Weekly Backup"
@@ -404,7 +405,7 @@ def run_sync_devices_job() -> None:
     Raises:
         RuntimeError: If the SSOTSyncDevices job is not found in Nautobot.
     """
-    nb = pynautobot.api(NAUTOBOT_URL, token=NAUTOBOT_TOKEN)
+    nb = pynautobot.api(NAUTOBOT_URL, token=NAUTOBOT_TOKEN, verify=SSL_VERIFY)
 
     groups = read_csv(CSV_PATH)
     total_ips = sum(len(v) for v in groups.values())
