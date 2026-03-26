@@ -373,9 +373,17 @@ def _post_process_devices(
     else:
         log.info("  location has no device-applicable tags — skipping tag copy")
 
-    # Fetch devices in sub-chunks to avoid overly long query strings
+    # Fetch devices in sub-chunks to avoid overly long query strings.
+    # Nautobot does not support primary_ip4__address as a device filter, so
+    # IP address strings are first resolved to IP object UUIDs, then devices
+    # are fetched by primary_ip4=<uuid>.
     for sub_chunk in _chunks(ips, 50):
-        devices = list(nb.dcim.devices.filter(primary_ip4__address=sub_chunk))
+        ip_objects = list(nb.ipam.ip_addresses.filter(address=sub_chunk))
+        ip_uuids = [str(ip.id) for ip in ip_objects]  # type: ignore[union-attr]
+        if not ip_uuids:
+            log.info("  no IP objects found for chunk %s — skipping", sub_chunk)
+            continue
+        devices = list(nb.dcim.devices.filter(primary_ip4=ip_uuids))
         for device in devices:
             current_tag_ids = {str(t.id) for t in (getattr(device, "tags", None) or [])}
 
